@@ -1,0 +1,211 @@
+---
+title: "UCI Adult Data"
+author: "Julian Lucero"
+date: "2024-05-13"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r}
+###Upload Data from excel
+library(readxl)
+adult <- read_excel("adult.xlsx")
+View(adult)
+```
+
+```{r}
+###Remove "?'s"
+New <- adult
+New[New == "?"] <- NA
+```
+
+```{r}
+###Summary 
+summary (adult)
+```
+```{r}
+###All NA's are in seperate categories. Data for this study does not need to be removed
+colSums(is.na(New))
+```
+```{r}
+###Make subset with studied variables 
+NewData <- adult[, c("age", "race", "educational_num", "gender", "hours_per_week", "income", "relationship")]
+print(NewData)
+```
+
+```{r}
+#Mutate Data to age groups for Table 1
+library(dplyr)
+
+NewData <- NewData %>%
+  mutate(age2 = case_when(
+    age >= 17 & age <= 30 ~ 1,
+    age >= 31 & age <= 40 ~ 2,
+    age >= 41 & age <= 50 ~ 3,
+    age >= 51 & age <= 60 ~ 4,
+    age >= 61 & age <= 70 ~ 5,
+    age >= 71 ~ 6
+  ))
+
+head(NewData)
+```
+```{r}
+# Recode "race" variable
+NewData <- NewData %>%
+  mutate(gender2 = case_when(
+    gender == "Male" ~ 1,
+    gender == "Female" ~ 2
+  ))
+```
+
+```{r}
+library(dagitty)
+
+dag <- dagitty('dag {
+"Education level" [pos="0.327,0.589"]
+"Hours Worked per week" [pos="0.387,-0.705"]
+"Income (Over/Under 50K)" [outcome,pos="-0.391,-0.156"]
+Age [pos="-1.199,-0.698"]
+Gender [exposure,pos="-1.995,0.058"]
+Race [exposure,pos="1.386,0.065"]
+Relationship [pos="-1.019,0.592"]
+"Education level" -> "Income (Over/Under 50K)"
+"Education level" -> Gender
+"Education level" -> Race
+"Hours Worked per week" -> "Income (Over/Under 50K)"
+"Hours Worked per week" -> Gender
+"Hours Worked per week" -> Race
+Age -> "Income (Over/Under 50K)"
+Age -> Gender
+Age -> Race
+Gender -> "Income (Over/Under 50K)"
+Race -> "Income (Over/Under 50K)"
+Relationship -> "Income (Over/Under 50K)"
+Relationship -> Gender
+Relationship -> Race
+}')
+
+plot(dag)
+```
+
+```{r}
+#Properly Label coded numbers for Table 1
+NewData$age2 <- recode_factor(NewData$age2,
+                                     "1" = "17-30",
+                                     "2" = "31-40",
+                                     "3" = "41-50",
+                                     "4" = "51-60",
+                                     "5" = "61-70",
+                                     "6" = "71+")
+```
+
+```{r}
+### Table 1
+
+library(Hmisc)
+
+label(NewData$age) <- "Age"
+label(NewData$race) <- "Race"
+label(NewData$educational_num) <- "Level of Education"
+label(NewData$gender) <- "Gender"
+label(NewData$hours_per_week) <- "Hours per Week Worked"
+label(NewData$income) <- "Income"
+label(NewData$relationship) <- "Relationship"
+
+Epi_Table <- table1::table1(
+  ~ gender + race + age2 + educational_num + hours_per_week + hours_per_week + relationship |
+    income,
+  data = NewData,
+  overall = c(left = "Total"),
+  topclass = "Rtable1-times",
+  caption = "Table1:Baseline Characteristics of Wealth, 1994"
+)
+Epi_Table
+```
+
+```{r}
+###Regression Model 
+
+#Need to recode salary 
+
+NewData <- NewData %>%
+  mutate(Binaryincome = case_when(income == "<=50K" ~ 0,
+    income == ">50K" ~ 1
+  ))
+
+View (NewData)
+```
+
+```{r}
+#Fit a model (unadjusted + adjusted) *logistic regression
+ModelU1 <- glm(Binaryincome ~ gender, data = NewData)
+summary(ModelU1)
+
+ModelU2 <- glm(Binaryincome ~ race, data = NewData)
+summary(ModelU2)
+
+modelM3 <-
+  glm(Binaryincome ~ gender + age + race + educational_num + hours_per_week + relationship,
+     data = NewData)
+summary(modelM3)
+```
+```{r}
+devres <- residuals(modelM3, type = "deviance")
+
+# Plot deviance residuals against fitted values
+plot(fitted(modelM3), devres, 
+     xlab = "Fitted values", ylab = "Deviance residuals",
+     main = "Model Fit",
+     pch = 16, col = "black")
+
+# Add a horizontal line at y = 0
+abline(h = 0, col = "blue", lty = 2)
+```
+```{r}
+library(ResourceSelection)
+hoslem.test(modelM3$y, fitted(modelM3))
+```
+```{r}
+# Subset the data for white males aged 41-50
+WMale <- subset(NewData, race == "White" & gender == "Male" & age2 == "41-50"& educational_num == "12" & hours_per_week == "40") 
+summary (WMale)
+```
+
+```{r}
+BFemale <- subset(NewData, race == "Black" & gender == "Female" & age2 == "41-50" & educational_num == "10" & hours_per_week == "40")
+summary (BFemale)
+```
+
+```{r}
+denom_fit <- glm(Binaryincome ~ gender + age + race + educational_num + hours_per_week + relationship,
+                 data = NewData, family = binomial)
+
+num_fit <- glm(Binaryincome ~ 1, data = NewData, family = binomial)
+
+pdenom <- predict(denom_fit, type = "response")
+pnum <- predict(num_fit, type = "response")
+
+NewData$iptw <- ifelse(NewData$Binaryincome == 0, ((1 - pnum) / (1 - pdenom)),                        (pnum / pdenom))
+NewData
+```
+
+```{r}
+library(ggplot2)
+ggplot(NewData) + aes(x=as.numeric(age), group=income, fill=income) + 
+  geom_histogram(binwidth=2, color='white')
+```
+
+```{r}
+IncomevRace <- data.frame(table(NewData$income, NewData$race, NewData$gender, NewData$educational_num))
+names(IncomevRace) <- c('income', 'race', 'gender', 'education','count')
+IncomevRace
+```
+```{r}
+ggplot(NewData) + aes(x=as.numeric(educational_num), group=income, fill=income) + 
+  geom_histogram(binwidth=2, color='white')
+```
+
+
